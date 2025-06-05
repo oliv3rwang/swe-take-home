@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+// src/App.jsx
+import React, { useState, useEffect } from 'react';
 import Filters from './components/Filters';
 import ChartContainer from './components/ChartContainer';
 import TrendAnalysis from './components/TrendAnalysis';
 import QualityIndicator from './components/QualityIndicator';
+import WeightedSummary from './components/WeightedSummary';
 
 function App() {
   const [locations, setLocations] = useState([]);
@@ -19,9 +21,30 @@ function App() {
   });
   const [loading, setLoading] = useState(false);
 
-  // Existing useEffect for locations and metrics
+  // Fetch dropdown options on mount
+  useEffect(() => {
+    async function fetchOptions() {
+      try {
+        const [locs, mets] = await Promise.all([
+          fetch('/api/v1/locations').then((res) => res.json()),
+          fetch('/api/v1/metrics').then((res) => res.json())
+        ]);
+        setLocations(locs.data);
+        setMetrics(mets.data);
+      } catch (err) {
+        console.error('Error fetching dropdown options:', err);
+      }
+    }
+    fetchOptions();
+  }, []);
 
-  // Updated fetch function to handle different analysis types
+  // Whenever analysisType changes, clear previously fetched data
+  useEffect(() => {
+    setClimateData([]);
+    setTrendData([]);
+  }, [filters.analysisType]);
+
+  // Fetch data based on analysisType
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -42,18 +65,26 @@ function App() {
 
       const response = await fetch(`${endpoint}?${queryParams}`);
       const data = await response.json();
-      
+
       if (filters.analysisType === 'trends') {
         setTrendData(data);
+        setClimateData([]);
       } else {
-        setClimateData(data.data);
+        setClimateData(data.data || []);
+        setTrendData([]);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
+      setClimateData([]);
+      setTrendData([]);
     } finally {
       setLoading(false);
     }
   };
+
+  const gridColsClass = filters.analysisType === 'raw'
+    ? 'grid-cols-1 lg:grid-cols-2'
+    : 'grid-cols-1';
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl">
@@ -66,7 +97,7 @@ function App() {
         </p>
       </header>
 
-      <Filters 
+      <Filters
         locations={locations}
         metrics={metrics}
         filters={filters}
@@ -74,22 +105,27 @@ function App() {
         onApplyFilters={fetchData}
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
+      <div className={`grid ${gridColsClass} gap-6 mt-8`}>
         {filters.analysisType === 'trends' ? (
-          <TrendAnalysis 
+          <TrendAnalysis
             data={trendData}
+            loading={loading}
+          />
+        ) : filters.analysisType === 'weighted' ? (
+          <WeightedSummary
+            data={climateData}
             loading={loading}
           />
         ) : (
           <>
-            <ChartContainer 
+            <ChartContainer
               title="Climate Trends"
               loading={loading}
               chartType="line"
               data={climateData}
               showQuality={true}
             />
-            <ChartContainer 
+            <ChartContainer
               title="Quality Distribution"
               loading={loading}
               chartType="bar"
@@ -100,7 +136,7 @@ function App() {
         )}
       </div>
 
-      <QualityIndicator 
+      <QualityIndicator
         data={climateData}
         className="mt-6"
       />

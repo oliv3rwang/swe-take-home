@@ -285,16 +285,24 @@ def get_summary():
     start_date = parse_date(args.get("start_date"))
     end_date   = parse_date(args.get("end_date"))
 
-    try:
-        q_thresh = float(args.get("quality_threshold")) if args.get("quality_threshold") is not None else None
-        if q_thresh is not None and not (0 <= q_thresh <= 1):
-            return jsonify({"error": "quality_threshold must be between 0 and 1"}), 400
-    except ValueError:
-        return jsonify({"error": "quality_threshold must be a number"}), 400
+    # Parse quality_threshold as a string key → numeric threshold
+    q_thresh_key = args.get("quality_threshold", type=str)
+    q_thresh_val = None
+    if q_thresh_key:
+        q_thresh_key = q_thresh_key.lower()
+        if q_thresh_key not in QUALITY_WEIGHTS:
+            return (
+                jsonify({
+                    "error": "quality_threshold must be one of: excellent, good, questionable, poor"
+                }),
+                400
+            )
+        q_thresh_val = QUALITY_WEIGHTS[q_thresh_key]
 
     # Build WHERE clauses
     where = ["1=1"]
     params = []
+
     if loc_id:
         where.append("c.location_id = %s")
         params.append(loc_id)
@@ -307,8 +315,20 @@ def get_summary():
     if end_date:
         where.append("c.date <= %s")
         params.append(end_date)
+    # If quality_threshold provided, filter rows where weight >= q_thresh_val
+    if q_thresh_val is not None:
+        where.append(f"""
+          CASE
+            WHEN c.quality = 'excellent' THEN 1.0
+            WHEN c.quality = 'good' THEN 0.8
+            WHEN c.quality = 'questionable' THEN 0.5
+            WHEN c.quality = 'poor' THEN 0.3
+            ELSE 0
+          END >= %s
+        """)
+        params.append(q_thresh_val)
 
-    # CASE for weight
+    # CASE expression for weight
     weight_case = """
       CASE
         WHEN c.quality = 'excellent' THEN 1.0
@@ -319,17 +339,19 @@ def get_summary():
       END
     """
 
+    # Summary query: weighted min, max, avg per metric
     summary_sql = f"""
       SELECT
         c.metric_id,
-        m.display_name AS metric_display_name,
-        MIN(c.value) AS min_value,
-        MAX(c.value) AS max_value,
+        m.name AS metric,
+        m.unit AS unit,
+        MIN(c.value) AS weighted_min,  -- same as raw min since min ignores weight
+        MAX(c.value) AS weighted_max,  -- same as raw max
         SUM(c.value * ({weight_case})) / NULLIF(SUM({weight_case}), 0) AS weighted_avg
       FROM climate_data c
       JOIN metrics m ON c.metric_id = m.id
       WHERE {" AND ".join(where)}
-      GROUP BY c.metric_id
+      GROUP BY c.metric_id, m.name, m.unit
       ORDER BY c.metric_id;
     """
 
@@ -338,6 +360,7 @@ def get_summary():
     cursor.execute(summary_sql, tuple(params))
     summary_rows = cursor.fetchall()
 
+    # Distribution query: count of each quality per metric
     dist_sql = f"""
       SELECT
         c.metric_id,
@@ -353,33 +376,42 @@ def get_summary():
     cursor.close()
     conn.close()
 
+    # Build a map: { metric_id: { quality: count, ... }, ... }
     dist_map = {}
     for r in dist_rows:
         mid = r["metric_id"]
-        q   = r["quality"]
+        q   = r["quality"].lower()
         cnt = r["count"]
         dist_map.setdefault(mid, {})[q] = cnt
 
+    # Format final response
     data = []
     for s in summary_rows:
-        mid = s["metric_id"]
+        mid       = s["metric_id"]
+        metric    = s["metric"]
+        unit      = s["unit"]
+        wmin      = float(s["weighted_min"])
+        wmax      = float(s["weighted_max"])
+        wavg      = float(s["weighted_avg"]) if s["weighted_avg"] is not None else None
+
+        # Build quality_distribution with defaults
         qdist = {
             "excellent":    dist_map.get(mid, {}).get("excellent", 0),
             "good":         dist_map.get(mid, {}).get("good", 0),
             "questionable": dist_map.get(mid, {}).get("questionable", 0),
             "poor":         dist_map.get(mid, {}).get("poor", 0),
         }
+
         data.append({
-            "metric_id":           mid,
-            "metric_display_name": s["metric_display_name"],
-            "min":                 s["min_value"],
-            "max":                 s["max_value"],
-            "weighted_avg":        float(s["weighted_avg"]) if s["weighted_avg"] is not None else None,
+            "metric":               metric,
+            "unit":                 unit,
+            "weighted_min":         wmin,
+            "weighted_max":         wmax,
+            "weighted_avg":         wavg,
             "quality_distribution": qdist
         })
 
     return jsonify({"data": data})
-
 
 @app.route("/api/v1/trends", methods=["GET"])
 def get_trends():
