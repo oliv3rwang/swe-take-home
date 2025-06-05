@@ -15,16 +15,7 @@ This repository contains the Flask-based backend for **EcoVision: Climate Visual
    - [3. Configure MySQL](#3-configure-mysql)
    - [4. Environment Variables](#4-environment-variables)
    - [5. Run the Server (Auto-seed)](#5-run-the-server-auto-seed)
-5. [API Endpoints](#api-endpoints)
-   - [`GET /api/v1/locations`](#get-apiv1locations)
-   - [`GET /api/v1/metrics`](#get-apiv1metrics)
-   - [`GET /api/v1/climate`](#get-apiv1climate)
-   - [`GET /api/v1/summary`](#get-apiv1summary)
-   - [`GET /api/v1/trends`](#get-apiv1trends)
-6. [Database Schema & Seeding](#database-schema--seeding)
-7. [Design Decisions & Notes](#design-decisions--notes)
-8. [Folder Structure](#folder-structure)
-
+     
 ---
 
 ## Overview
