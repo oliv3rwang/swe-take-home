@@ -185,73 +185,73 @@ def get_metrics():
 
 @app.route("/api/v1/climate", methods=["GET"])
 def get_climate_data():
-    args       = request.args
-    loc_id     = args.get("location_id", type=int)
-    metric_id  = args.get("metric", type=int)
-    start_date = parse_date(args.get("start_date"))
-    end_date   = parse_date(args.get("end_date"))
+    args          = request.args
+    # Now accept location name (e.g., "Irvine", "London", "Tokyo") instead of integer ID
+    loc_name      = args.get("location_id", type=str)
+    # Accept metric name (e.g., "humidity", "precipitation", "temperature") instead of integer ID
+    metric_name   = args.get("metric", type=str)
+    start_date    = parse_date(args.get("start_date"))
+    end_date      = parse_date(args.get("end_date"))
 
-    try:
-        q_thresh = float(args.get("quality_threshold")) if args.get("quality_threshold") is not None else None
-        if q_thresh is not None and not (0 <= q_thresh <= 1):
-            return jsonify({"error": "quality_threshold must be between 0 and 1"}), 400
-    except ValueError:
-        return jsonify({"error": "quality_threshold must be a number"}), 400
+    # Parse quality_threshold as a string (one of "excellent", "good", "questionable", "poor")
+    q_thresh_key = args.get("quality_threshold", type=str)
+    q_thresh_val = None
+    if q_thresh_key:
+        q_thresh_key = q_thresh_key.lower()
+        if q_thresh_key not in QUALITY_WEIGHTS:
+            return jsonify({"error": "quality_threshold must be one of: excellent, good, questionable, poor"}), 400
+        q_thresh_val = QUALITY_WEIGHTS[q_thresh_key]
 
     page     = args.get("page", default=1, type=int)
     per_page = args.get("per_page", default=50, type=int)
 
-    sql    = """
+    # We JOIN locations and metrics so we can filter by name and also return them in the result
+    sql = """
       SELECT
         c.id,
         c.location_id,
+        l.name AS location_name,
         c.metric_id,
+        m.name AS metric_name,
         DATE_FORMAT(c.date, '%Y-%m-%d') AS date,
         c.value,
-        c.quality
+        c.quality,
+        m.unit
       FROM climate_data c
+      JOIN locations l ON c.location_id = l.id
+      JOIN metrics m   ON c.metric_id   = m.id
       WHERE 1=1
     """
     params = []
-    if loc_id:
-        sql += " AND c.location_id = %s"
-        params.append(loc_id)
-    if metric_id:
-        sql += " AND c.metric_id = %s"
-        params.append(metric_id)
+
+    if loc_name:
+        sql += " AND l.name = %s"
+        params.append(loc_name)
+
+    if metric_name:
+        sql += " AND m.name = %s"
+        params.append(metric_name)
+
     if start_date:
         sql += " AND c.date >= %s"
         params.append(start_date)
+
     if end_date:
         sql += " AND c.date <= %s"
         params.append(end_date)
 
-    conn = get_db_connection()
+    conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(sql, tuple(params))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    if q_thresh is not None:
-        rows = [r for r in rows if QUALITY_WEIGHTS.get(r["quality"], 0) >= q_thresh]
+    # Apply quality_threshold filtering in Python
+    if q_thresh_val is not None:
+        rows = [r for r in rows if QUALITY_WEIGHTS.get(r["quality"], 0.0) >= q_thresh_val]
 
-    # Join location & metric
-    for r in rows:
-        conn = get_db_connection()
-        c1 = conn.cursor(dictionary=True)
-        c1.execute("SELECT * FROM locations WHERE id = %s", (r["location_id"],))
-        r["location"] = c1.fetchone() or {}
-        c1.close()
-        conn.close()
-
-        conn = get_db_connection()
-        c2 = conn.cursor(dictionary=True)
-        c2.execute("SELECT * FROM metrics WHERE id = %s", (r["metric_id"],))
-        r["metric"] = c2.fetchone() or {}
-        c2.close()
-        conn.close()
-
+    # Pagination
     total_count = len(rows)
     start_idx   = (page - 1) * per_page
     end_idx     = start_idx + per_page
@@ -265,7 +265,6 @@ def get_climate_data():
             "per_page": per_page
         }
     })
-
 
 @app.route("/api/v1/summary", methods=["GET"])
 def get_summary():
