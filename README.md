@@ -1,3 +1,13 @@
-# Take Home Assessment - Software Engineering Position
+# SWE Take-Home Assessment
 
-This project is designed to test your full-stack skills in Python, JavaScript, and SQL by building an interactive climate data explorer. Details are included in invitation.
+A full-stack climate data explorer. See the individual READMEs for setup and usage details:
+
+- **backend/**  
+  Contains the Flask API, database models, and migrations.  
+  - See `backend/README.md` for instructions.
+
+- **frontend/**  
+  Contains the React/Vite/Tailwind application for data visualization.  
+  - See `frontend/README.md` for instructions.
+
+---
