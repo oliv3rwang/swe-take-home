@@ -14,7 +14,10 @@ function QualityIndicator({ data, className = '' }) {
     };
     
     data.forEach(item => {
-      stats[item.quality.toLowerCase()]++;
+      const key = item?.quality?.toLowerCase();
+      if (key && stats.hasOwnProperty(key)) {
+        stats[key]++;
+      }
     });
     
     return {
