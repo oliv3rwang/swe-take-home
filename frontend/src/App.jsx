@@ -8,7 +8,7 @@ function App() {
   const [locations, setLocations] = useState([]);
   const [metrics, setMetrics] = useState([]);
   const [climateData, setClimateData] = useState([]);
-  const [trendData, setTrendData] = useState(null);
+  const [trendData, setTrendData] = useState([]);
   const [filters, setFilters] = useState({
     locationId: '',
     startDate: '',
@@ -44,7 +44,7 @@ function App() {
       const data = await response.json();
       
       if (filters.analysisType === 'trends') {
-        setTrendData(data.data);
+        setTrendData(data);
       } else {
         setClimateData(data.data);
       }

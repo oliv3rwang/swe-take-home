@@ -1,4 +1,5 @@
 // src/components/TrendAnalysis.jsx
+import React from 'react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -44,16 +45,20 @@ function TrendAnalysis({ data, loading }) {
               <div className="space-y-2">
                 <TrendStat 
                   label="Trend Direction"
-                  value={analysis.trend.direction}
+                  value={analysis.trend.direction || 'N/A'}
                   icon={getTrendIcon(analysis.trend.direction)}
                 />
                 <TrendStat 
                   label="Rate of Change"
-                  value={`${analysis.trend.rate} ${analysis.trend.unit}/month`}
+                  value={analysis.trend.rate !== undefined 
+                    ? `${analysis.trend.rate} ${analysis.trend.unit}/month` 
+                    : 'N/A'}
                 />
                 <TrendStat 
                   label="Confidence"
-                  value={`${(analysis.trend.confidence * 100).toFixed(1)}%`}
+                  value={analysis.trend.confidence !== undefined 
+                    ? `${(analysis.trend.confidence * 100).toFixed(1)}%` 
+                    : 'N/A'}
                 />
               </div>
             </div>
@@ -66,24 +71,30 @@ function TrendAnalysis({ data, loading }) {
         <h3 className="text-lg font-semibold mb-4">Detected Anomalies</h3>
         <div className="space-y-2">
           {Object.entries(data).map(([metric, analysis]) => (
-            analysis.anomalies.length > 0 && (
-              <div key={metric} className="border-b pb-2">
-                <h4 className="font-medium text-gray-700 mb-2 capitalize">{metric}</h4>
+            <div key={metric} className="mb-4">
+              <h4 className="font-medium text-gray-700 mb-2 capitalize">{metric}</h4>
+              {analysis.anomalies && analysis.anomalies.length > 0 ? (
                 <div className="space-y-1">
                   {analysis.anomalies.map((anomaly, index) => (
                     <div key={index} className="flex items-center text-sm">
                       <span className="w-32">{anomaly.date}</span>
                       <span className="w-24">{anomaly.value}</span>
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        anomaly.deviation > 3 ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
-                      }`}>
+                      <span
+                        className={`px-2 py-1 rounded text-xs ${
+                          anomaly.deviation > 3
+                            ? 'bg-red-100 text-red-800'
+                            : 'bg-yellow-100 text-yellow-800'
+                        }`}
+                      >
                         {anomaly.deviation.toFixed(1)} σ
                       </span>
                     </div>
                   ))}
                 </div>
-              </div>
-            )
+              ) : (
+                <p className="text-gray-500 text-sm">No anomalies detected.</p>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -93,29 +104,42 @@ function TrendAnalysis({ data, loading }) {
         <h3 className="text-lg font-semibold mb-4">Seasonal Patterns</h3>
         <div className="space-y-4">
           {Object.entries(data).map(([metric, analysis]) => (
-            analysis.seasonality.detected && (
-              <div key={metric} className="border-b pb-4">
-                <h4 className="font-medium text-gray-700 mb-2 capitalize">{metric}</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-600">
-                      Period: {analysis.seasonality.period}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Confidence: {(analysis.seasonality.confidence * 100).toFixed(1)}%
-                    </p>
+            <div key={metric} className="mb-4">
+              <h4 className="font-medium text-gray-700 mb-2 capitalize">{metric}</h4>
+              {analysis.seasonality ? (
+                analysis.seasonality.detected ? (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-600">
+                        Period: {analysis.seasonality.period}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Confidence: {(analysis.seasonality.confidence * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      {Object.entries(analysis.seasonality.pattern).map(
+                        ([season, vals]) => (
+                          <div
+                            key={season}
+                            className="flex justify-between text-sm"
+                          >
+                            <span className="capitalize">{season}</span>
+                            <span>
+                              {vals.avg.toFixed(1)} ({vals.trend})
+                            </span>
+                          </div>
+                        )
+                      )}
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    {Object.entries(analysis.seasonality.pattern).map(([season, data]) => (
-                      <div key={season} className="flex justify-between text-sm">
-                        <span className="capitalize">{season}</span>
-                        <span>{data.avg.toFixed(1)} ({data.trend})</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )
+                ) : (
+                  <p className="text-gray-500 text-sm">No seasonality detected.</p>
+                )
+              ) : (
+                <p className="text-gray-500 text-sm">Seasonality data N/A.</p>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -136,6 +160,7 @@ function TrendStat({ label, value, icon }) {
 }
 
 function getTrendIcon(direction) {
+  if (!direction) return null;
   switch (direction.toLowerCase()) {
     case 'increasing':
       return '↗️';

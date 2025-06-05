@@ -1,10 +1,11 @@
 import os
 import json
 import math
-from datetime import datetime
+from datetime import datetime, date
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
+import statistics
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -24,6 +25,16 @@ QUALITY_WEIGHTS = {
     "questionable": 0.5,
     "poor":         0.3
 }
+
+def month_to_season(month: int) -> str:
+    """Map month integer to season name."""
+    if month in (12, 1, 2):
+        return "winter"
+    if month in (3, 4, 5):
+        return "spring"
+    if month in (6, 7, 8):
+        return "summer"
+    return "autumn"
 
 BASE_DIR  = os.path.dirname(__file__)
 DATA_PATH = os.path.join(BASE_DIR, "data", "sample_data.json")
@@ -372,132 +383,225 @@ def get_summary():
 
 @app.route("/api/v1/trends", methods=["GET"])
 def get_trends():
-    args         = request.args
-    loc_id       = args.get("location_id", type=int)
-    metric_param = args.get("metric", type=int)
-    start_date   = parse_date(args.get("start_date"))
-    end_date     = parse_date(args.get("end_date"))
+    args          = request.args
+    loc_name      = args.get("location_id", type=str)
+    metric_name   = args.get("metric", type=str)
+    start_date    = parse_date(args.get("start_date"))
+    end_date      = parse_date(args.get("end_date"))
 
-    try:
-        q_thresh = float(args.get("quality_threshold")) if args.get("quality_threshold") is not None else None
-        if q_thresh is not None and not (0 <= q_thresh <= 1):
-            return jsonify({"error": "quality_threshold must be between 0 and 1"}), 400
-    except ValueError:
-        return jsonify({"error": "quality_threshold must be a number"}), 400
+    # Parse quality_threshold as a string key → numeric threshold
+    q_thresh_key = args.get("quality_threshold", type=str)
+    q_thresh_val = None
+    if q_thresh_key:
+        q_thresh_key = q_thresh_key.lower()
+        if q_thresh_key not in QUALITY_WEIGHTS:
+            return (
+                jsonify({
+                    "error": "quality_threshold must be one of: excellent, good, questionable, poor"
+                }),
+                400
+            )
+        q_thresh_val = QUALITY_WEIGHTS[q_thresh_key]
 
-    where = ["1=1"]
+    # Build SQL to fetch raw data (date, value, metric_name, unit, quality)
+    sql = """
+      SELECT
+        c.date AS date_col,
+        c.value,
+        c.quality,
+        m.name AS metric_name,
+        m.unit
+      FROM climate_data c
+      JOIN locations l ON c.location_id = l.id
+      JOIN metrics m ON c.metric_id = m.id
+      WHERE 1=1
+    """
     params = []
-    if loc_id:
-        where.append("c.location_id = %s")
-        params.append(loc_id)
-    if metric_param:
-        where.append("c.metric_id = %s")
-        params.append(metric_param)
+
+    if loc_name:
+        sql += " AND l.name = %s"
+        params.append(loc_name)
+
+    if metric_name:
+        sql += " AND m.name = %s"
+        params.append(metric_name)
+
     if start_date:
-        where.append("c.date >= %s")
+        sql += " AND c.date >= %s"
         params.append(start_date)
+
     if end_date:
-        where.append("c.date <= %s")
+        sql += " AND c.date <= %s"
         params.append(end_date)
 
-    conn = get_db_connection()
+    conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(f"""
-      SELECT
-        c.metric_id,
-        DATE_FORMAT(c.date, '%Y-%m-%d') AS date_str,
-        c.date       AS date_obj,
-        c.value,
-        c.quality
-      FROM climate_data c
-      WHERE {" AND ".join(where)}
-      ORDER BY c.metric_id, c.date;
-    """, tuple(params))
-    all_rows = cursor.fetchall()
-
-    per_metric = {}
-    for entry in all_rows:
-        mid    = entry["metric_id"]
-        weight = QUALITY_WEIGHTS.get(entry["quality"], 0)
-        if q_thresh is not None and weight < q_thresh:
-            continue
-        per_metric.setdefault(mid, []).append({
-            "date_str": entry["date_str"],
-            "date_obj": entry["date_obj"],
-            "value":    float(entry["value"]),
-            "weight":   weight
-        })
-
-    results = []
-    for mid, entries in per_metric.items():
-        if len(entries) < 2:
-            cursor.execute("SELECT display_name FROM metrics WHERE id = %s", (mid,))
-            mrow = cursor.fetchone()
-            mname = mrow["display_name"] if mrow else None
-            results.append({
-                "metric_id":           mid,
-                "metric_display_name": mname,
-                "direction":           None,
-                "rate_of_change":      None,
-                "anomalies":           [],
-                "seasonality":         {},
-                "confidence":          None
-            })
-            continue
-
-        entries.sort(key=lambda e: e["date_obj"])
-        n = len(entries)
-        x_vals = [e["date_obj"].toordinal() for e in entries]
-        y_vals = [e["value"] for e in entries]
-
-        mean_x = sum(x_vals) / n
-        mean_y = sum(y_vals) / n
-        cov_xy = sum((x_vals[i] - mean_x) * (y_vals[i] - mean_y) for i in range(n))
-        var_x  = sum((x_vals[i] - mean_x) ** 2 for i in range(n))
-        var_y  = sum((y_vals[i] - mean_y) ** 2 for i in range(n))
-
-        slope = cov_xy / var_x if var_x != 0 else 0.0
-        r_coeff = cov_xy / math.sqrt(var_x * var_y) if (var_x > 0 and var_y > 0) else 0.0
-        confidence = abs(r_coeff)
-
-        if slope > 0:
-            direction = "increasing"
-        elif slope < 0:
-            direction = "decreasing"
-        else:
-            direction = "stable"
-
-        std_y = math.sqrt(var_y / n) if n > 0 else 0
-        anomalies = [
-            entries[i]["date_str"]
-            for i in range(n)
-            if abs(y_vals[i] - mean_y) > 2 * std_y
-        ]
-
-        month_buckets = {}
-        for i in range(n):
-            month = entries[i]["date_obj"].strftime("%m")
-            month_buckets.setdefault(month, []).append(y_vals[i])
-        seasonality = {m: sum(vals) / len(vals) for m, vals in month_buckets.items()}
-
-        cursor.execute("SELECT display_name FROM metrics WHERE id = %s", (mid,))
-        mrow = cursor.fetchone()
-        mname = mrow["display_name"] if mrow else None
-
-        results.append({
-            "metric_id":           mid,
-            "metric_display_name": mname,
-            "direction":           direction,
-            "rate_of_change":      slope,
-            "anomalies":           anomalies,
-            "seasonality":         seasonality,
-            "confidence":          confidence
-        })
-
+    cursor.execute(sql, tuple(params))
+    rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return jsonify({"data": results})
 
+    # Apply quality_threshold filtering if provided
+    if q_thresh_val is not None:
+        rows = [
+            r for r in rows
+            if QUALITY_WEIGHTS.get(r["quality"].lower(), 0.0) >= q_thresh_val
+        ]
+
+    # Group rows by metric_name
+    grouped = {}
+    for r in rows:
+        metric = r["metric_name"]
+        if metric not in grouped:
+            grouped[metric] = {
+                "unit": r["unit"],
+                "points": []
+            }
+
+        raw_date = r["date_col"]
+        # If raw_date is a string, parse; if it's a date object, use it directly.
+        if isinstance(raw_date, str):
+            try:
+                dt = datetime.strptime(raw_date, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+        elif isinstance(raw_date, date):
+            dt = raw_date
+        else:
+            # If for some reason it’s a datetime.datetime, convert to date
+            try:
+                dt = raw_date.date()
+            except Exception:
+                continue
+
+        grouped[metric]["points"].append({
+            "date": dt,
+            "value": float(r["value"]),
+            "quality": r["quality"].lower()
+        })
+
+    # Prepare final response structure
+    result = {}
+
+    for metric, info in grouped.items():
+        pts = sorted(info["points"], key=lambda x: x["date"])
+        n   = len(pts)
+        if n == 0:
+            continue
+
+        # Convert dates → ordinals and collect values
+        xs = [p["date"].toordinal() for p in pts]
+        ys = [p["value"] for p in pts]
+
+        # Compute linear regression (slope, intercept, R^2)
+        mean_x = statistics.mean(xs)
+        mean_y = statistics.mean(ys)
+
+        sum_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+        sum_x2 = sum((x - mean_x) ** 2 for x in xs)
+        slope = sum_xy / sum_x2 if sum_x2 != 0 else 0.0
+        intercept = mean_y - (slope * mean_x)
+
+        ss_tot = sum((y - mean_y) ** 2 for y in ys)
+        ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+        r_squared = (1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+        r_squared = max(0.0, r_squared)
+
+        # Convert slope (units/day) → rate/month (≈30 days)
+        rate_per_month = slope * 30
+        if abs(rate_per_month) < 1e-6:
+            direction = "stable"
+        elif rate_per_month > 0:
+            direction = "increasing"
+        else:
+            direction = "decreasing"
+
+        trend_obj = {
+            "direction": direction,
+            "rate": round(rate_per_month, 3),
+            "unit": info["unit"],
+            "confidence": round(r_squared, 3)
+        }
+
+        # Detect anomalies: |value - mean| > 3 * std_dev
+        anomalies = []
+        if n > 1:
+            std_dev = statistics.stdev(ys)
+            for p in pts:
+                deviation = 0.0
+                if std_dev > 0:
+                    deviation = (p["value"] - mean_y) / std_dev
+                # Change threshold from 3 to 2:
+                if abs(deviation) > 2:
+                    anomalies.append({
+                        "date": p["date"].strftime("%Y-%m-%d"),
+                        "value": p["value"],
+                        "deviation": round(deviation, 2)
+                    })
+                    
+        # Seasonality detection (group by year & season)
+        season_data = {}  # {(year, season): [values]}
+        for p in pts:
+            yr     = p["date"].year
+            season = month_to_season(p["date"].month)
+            key    = (yr, season)
+            season_data.setdefault(key, []).append(p["value"])
+
+        # Compute per-year–per-season averages
+        per_year_season_avg = {}
+        for (yr, season), vals in season_data.items():
+            per_year_season_avg.setdefault(season, []).append({
+                "year": yr,
+                "avg": statistics.mean(vals)
+            })
+
+        # Check if span ≥ 365 days → seasonality detected
+        detected = (pts[-1]["date"] - pts[0]["date"]).days >= 365
+
+        # Build pattern for each season
+        pattern = {}
+        for season, entries in per_year_season_avg.items():
+            entries.sort(key=lambda x: x["year"])
+            avg_all = round(statistics.mean(e["avg"] for e in entries), 2)
+
+            if len(entries) > 1:
+                xs_s = [e["year"] for e in entries]
+                ys_s = [e["avg"]  for e in entries]
+                mean_xs = statistics.mean(xs_s)
+                mean_ys = statistics.mean(ys_s)
+
+                sum_xy_s = sum((x - mean_xs)*(y - mean_ys) for x, y in zip(xs_s, ys_s))
+                sum_x2_s = sum((x - mean_xs)**2 for x in xs_s)
+                slope_s = sum_xy_s / sum_x2_s if sum_x2_s != 0 else 0.0
+
+                if abs(slope_s) < 1e-6:
+                    trend_s = "stable"
+                elif slope_s > 0:
+                    trend_s = "increasing"
+                else:
+                    trend_s = "decreasing"
+            else:
+                trend_s = "stable"
+
+            pattern[season] = {
+                "avg": avg_all,
+                "trend": trend_s
+            }
+
+        seasonality_obj = {
+            "detected": detected,
+            "period": "yearly" if detected else None,
+            "confidence": round(r_squared, 3) if detected else None,
+            "pattern": pattern
+        }
+
+        result[metric] = {
+            "trend":       trend_obj,
+            "anomalies":   anomalies,
+            "seasonality": seasonality_obj
+        }
+
+    return jsonify(result)
 
 if __name__ == "__main__":
     # Create tables + seed data on startup
